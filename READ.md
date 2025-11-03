@@ -2,3 +2,4 @@ minorchange
 testingithubaction
 minorchange
 minor
+minor
