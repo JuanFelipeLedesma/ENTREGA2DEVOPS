@@ -1,0 +1,21 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo "Build: preparando artefacto para pruebas"
+  build:
+    commands:
+      - set -e
+      - rm -rf ci_artifacts
+      - mkdir -p ci_artifacts
+      # Copiamos solo lo necesario para las pruebas
+      - cp -R blacklist-ms ci_artifacts/
+      - cp -R tests ci_artifacts/ || true
+      - [ -f pytest.ini ] && cp pytest.ini ci_artifacts/ || true
+artifacts:
+  base-directory: ci_artifacts
+  files:
+    - '**/*'
