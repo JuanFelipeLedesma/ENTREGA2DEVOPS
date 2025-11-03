@@ -30,12 +30,16 @@ phases:
         python - <<'PY'
         import os
         from application import application as app
+        import src.models as models  # Asegura que las clases de modelo estén importadas
         from src.models import db
-        # Garantizamos que la app use la misma URI definida en el entorno
+        from sqlalchemy import inspect
+
+        # Usa la misma URI que exportamos
         app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
         with app.app_context():
-            db.create_all()
-        print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
+            db.create_all()  # crea todas las tablas definidas en los modelos importados
+            print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
+            print("Tablas creadas (bootstrap):", inspect(db.engine).get_table_names())
         PY
 
   build:
@@ -45,6 +49,19 @@ phases:
         set -e
         # Usar SIEMPRE la misma BD que en el bootstrap
         export DATABASE_URL=sqlite:///ci.sqlite3
+
+        # Sanity check antes de correr pytest (mismas tablas visibles)
+        python - <<'PY'
+        import os
+        from application import application as app
+        from sqlalchemy import inspect
+        from src.models import db
+
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
+        with app.app_context():
+            print("DB previa a pytest:", app.config["SQLALCHEMY_DATABASE_URI"])
+            print("Tablas existentes (pre-pytest):", inspect(db.engine).get_table_names())
+        PY
 
         # Detectar dónde están las rutas reales
         COV_DIR="src"
