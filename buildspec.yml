@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "70"  # luego lo subimos a 95 para forzar un rojo de evidencia
+    COVERAGE_MIN: "85"  # luego lo subimos a 95 para forzar un rojo de evidencia
 
 phases:
   install:
