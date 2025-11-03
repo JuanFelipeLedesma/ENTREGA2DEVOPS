@@ -9,12 +9,11 @@ bp = Blueprint("blacklist_get", __name__)
 @require_bearer
 def get_blacklist(email: str):
     """
-    Devuelve el estado de blacklist para un email.
-    - 200 si existe, con payload {'email', 'blacklisted': True, ['blocked_reason']}.
-    - 404 si no existe, con payload {'error': 'not found', 'email', 'blacklisted': False}.
+    Responde:
+      - 200 si existe: {'email','app_uuid','blacklisted':True,['blocked_reason']}
+      - 404 si no existe: {'error':'not found','email','blacklisted':False}
     """
     q = Blacklist.query.filter_by(email=email)
-    # Si el modelo tiene created_at, usa el más reciente; si no, .first() igualmente funciona.
     try:
         row = q.order_by(Blacklist.created_at.desc()).first()
     except Exception:
@@ -29,6 +28,8 @@ def get_blacklist(email: str):
 
     payload = {
         "email": row.email,
+        # Si app_uuid es UUID o string, str(...) lo deja listo para JSON
+        "app_uuid": str(getattr(row, "app_uuid", "")) or None,
         "blacklisted": True,
     }
     if getattr(row, "blocked_reason", None):
