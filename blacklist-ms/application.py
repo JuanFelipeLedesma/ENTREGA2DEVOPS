@@ -1,44 +1,61 @@
+# src/application.py
 import os
 import json
 from flask import Flask, jsonify, request
-from src.config import DATABASE_URL, PORT
-from src.models import db
-from src.resources.blacklist_post import bp as bp_post
-from src.resources.blacklist_get import bp as bp_get
+from sqlalchemy.pool import StaticPool
+
+# Config propia
+from src.config import DATABASE_URL as CFG_DATABASE_URL, PORT
+# Importa el db y los modelos para registrar el metadata antes de create_all()
+from src.models import db, Blacklist  # si hay más modelos, impórtalos aquí
 
 # ---- Feature flag (toggle por env var) ----
 FEATURE_VERBOSE = os.getenv("FEATURE_VERBOSE", "false").lower() == "true"
 
-# Elastic Beanstalk busca este objeto:
+# Elastic Beanstalk y los tests esperan este objeto:
 application = Flask(__name__)
 
-# ---- Config DB ----
-application.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+# ---- Config DB (permite que el test sobreescriba por env) ----
+DB_URL = os.getenv("DATABASE_URL", CFG_DATABASE_URL)
+application.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
 application.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-application.config["FEATURE_VERBOSE"] = FEATURE_VERBOSE  # disponible para quien lo necesite
+application.config["FEATURE_VERBOSE"] = FEATURE_VERBOSE
 
-# ---- Init DB y tablas ----
+# Caso especial: SQLite en memoria → una sola conexión viva para que no se
+# “pierdan” las tablas entre create_all() y las sesiones del ORM.
+engine_opts = dict(application.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))
+if DB_URL.startswith("sqlite:///:memory:"):
+    engine_opts.update({
+        "poolclass": StaticPool,
+        "connect_args": {"check_same_thread": False},
+    })
+elif DB_URL.startswith("sqlite:///"):
+    # Para archivos SQLite locales es útil desactivar check_same_thread
+    engine_opts.update({
+        "connect_args": {"check_same_thread": False},
+    })
+if engine_opts:
+    application.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_opts
+
+# ---- Inicializa SQLAlchemy y crea tablas ----
+# (db se define en src/models.py como db = SQLAlchemy())
 db.init_app(application)
 with application.app_context():
-    db.create_all()
-try:
-    # si tus modelos y el "db" están en src/models.py
-    from src import models as _models
-    _db = _models.db
-except Exception:
-    # fallback si usaste otro nombre/ubicación
-    from src.database import db as _db  # o from src.db import db as _db
-
-with application.app_context():
-    _db.create_all()
+    db.create_all()  # crea todas las tablas una vez cargados los modelos
 
 # ---- Health ----
 @application.route("/health", methods=["GET"])
 def health():
-    # Mantengo v6 como versión para esta estrategia de feature flags
-    return jsonify({"status": "ok", "version": "v6", "feature_verbose": FEATURE_VERBOSE}), 200
+    # Mantengo v6 como versión para tu estrategia de flags
+    return jsonify({
+        "status": "ok",
+        "version": "v6",
+        "feature_verbose": FEATURE_VERBOSE
+    }), 200
 
 # ---- Blueprints existentes ----
+from src.resources.blacklist_post import bp as bp_post
+from src.resources.blacklist_get import bp as bp_get
 application.register_blueprint(bp_post)
 application.register_blueprint(bp_get)
 
@@ -58,35 +75,21 @@ def maybe_augment_blacklist_get(response):
             and response.content_type
             and response.content_type.startswith("application/json")
         ):
-            # Intenta parsear JSON de la respuesta
-            payload = None
             try:
-                # Flask 2.x: get_json(silent=True) existe en Request, no en Response.
-                # Para Response usamos response.get_data y json.loads
                 payload = json.loads(response.get_data(as_text=True))
             except Exception:
                 payload = None
 
-            # Esperamos un dict con 'email'
-            if isinstance(payload, dict) and "email" in payload:
-                # Si ya viene blocked_reason no tocamos nada
-                if "blocked_reason" not in payload:
-                    # Import aquí para evitar dependencias circulares al importar modelos
-                    from src.models import Blacklist  # ajusta al nombre real del modelo si difiere
-
-                    email_value = payload["email"]
-                    with application.app_context():
-                        row = (
-                            Blacklist.query.filter_by(email=email_value)
-                            .order_by(Blacklist.created_at.desc() if hasattr(Blacklist, "created_at") else None)
-                            .first()
-                        )
-                        if row and getattr(row, "blocked_reason", None):
-                            payload["blocked_reason"] = row.blocked_reason
-
-                    # Reescribe el cuerpo de la respuesta
+            if isinstance(payload, dict) and "email" in payload and "blocked_reason" not in payload:
+                # Usamos la sesión actual del ORM (no abrimos otro app_context)
+                row = (
+                    Blacklist.query.filter_by(email=payload["email"])
+                    .order_by(getattr(Blacklist, "created_at", None).desc() if hasattr(Blacklist, "created_at") else None)
+                    .first()
+                )
+                if row and getattr(row, "blocked_reason", None):
+                    payload["blocked_reason"] = row.blocked_reason
                     response.set_data(json.dumps(payload))
-                    # Asegura header correcto
                     response.headers["Content-Type"] = "application/json; charset=utf-8"
     except Exception:
         # No rompas la respuesta por un fallo del enriquecimiento
