@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "70"        # luego lo subimos a 95 para forzar un rojo de evidencia
+    COVERAGE_MIN: "70"  # luego lo subimos a 95 para forzar un rojo de evidencia
 
 phases:
   install:
@@ -14,23 +14,28 @@ phases:
       - echo "[INSTALL] Dependencias de la app"
       - pip install -r blacklist-ms/requirements.txt
       - echo "[INSTALL] Dependencias de test"
-      - if [ -f "requirements-dev.txt" ]; then pip install -r requirements-dev.txt; else pip install pytest pytest-cov requests; fi
+      - |
+        if [ -f "requirements-dev.txt" ]; then
+          pip install -r requirements-dev.txt
+        else
+          pip install pytest pytest-cov requests
+        fi
 
   pre_build:
     commands:
-      - echo "[PRE_BUILD] Exportando PYTHONPATH"
+      - echo "[PRE_BUILD] Exportando PYTHONPATH y preparando BD SQLite"
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
-      - echo "[PRE_BUILD] Creando esquema de BD (idempotente)"
+      - export DATABASE_URL=sqlite:///ci.sqlite3
       - |
         python - <<'PY'
         import os
-        os.environ.setdefault("DATABASE_URL", "sqlite:///ci.sqlite3")
         from application import application as app
-        # IMPORTANTE: ajusta según dónde declares 'db'
-        from src.models import db    # si tu 'db' está en otro módulo, cámbialo (p. ej., from src.database import db)
+        from src.models import db
+        # Garantizamos que la app use la misma URI definida en el entorno
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
         with app.app_context():
             db.create_all()
-        print("DB bootstrap OK")
+        print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
         PY
 
   build:
@@ -38,6 +43,8 @@ phases:
       - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
       - |
         set -e
+        # Usar SIEMPRE la misma BD que en el bootstrap
+        export DATABASE_URL=sqlite:///ci.sqlite3
 
         # Detectar dónde están las rutas reales
         COV_DIR="src"
@@ -50,12 +57,14 @@ phases:
         [ -d "blacklist-ms/tests" ] && TEST_DIR="blacklist-ms/tests"
 
         echo "Usando cobertura en: $COV_DIR y $COV_APP; tests en: $TEST_DIR"
+        echo "DATABASE_URL=${DATABASE_URL}"
 
         pytest "$TEST_DIR" -vv --maxfail=1 --disable-warnings \
           --cov="$COV_DIR" \
           --cov="$COV_APP" \
           --cov-report=term-missing \
-          --cov-fail-under=${COVERAGE_MIN}
+          --cov-fail-under="${COVERAGE_MIN}"
+
 artifacts:
   files:
     - artifact/*.zip
