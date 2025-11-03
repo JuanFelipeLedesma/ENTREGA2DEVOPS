@@ -1,34 +1,52 @@
 version: 0.2
 
+env:
+  variables:
+    COVERAGE_MIN: "70"        # luego lo subimos a 95 para forzar un rojo de evidencia
+
 phases:
   install:
     runtime-versions:
       python: 3.11
     commands:
-      - python -V
-      - pip install --upgrade pip
+      - echo "[INSTALL] Actualizando pip/setuptools/wheel"
+      - pip install --upgrade pip setuptools wheel
+      - echo "[INSTALL] Dependencias de la app"
       - pip install -r blacklist-ms/requirements.txt
-      - pip install -r requirements-dev.txt
+      - echo "[INSTALL] Dependencias de test"
+      - if [ -f "requirements-dev.txt" ]; then pip install -r requirements-dev.txt; else pip install pytest pytest-cov requests; fi
+
   pre_build:
     commands:
-      # Hacemos visible /blacklist-ms para imports "from application import application"
+      - echo "[PRE_BUILD] Exportando PYTHONPATH"
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
-      # Variables mínimas para CI (DB efímera y token fijo)
-      - export DATABASE_URL=sqlite:///$CODEBUILD_SRC_DIR/ci.sqlite3
-      - export AUTH_TOKEN=change-me-very-strong
-      - export PORT=5000
+      - echo "[PRE_BUILD] Creando esquema de BD (idempotente)"
+      - |
+        python - <<'PY'
+        import os
+        os.environ.setdefault("DATABASE_URL", "sqlite:///ci.sqlite3")
+        from application import application as app
+        # IMPORTANTE: ajusta según dónde declares 'db'
+        from src.models import db    # si tu 'db' está en otro módulo, cámbialo (p. ej., from src.database import db)
+        with app.app_context():
+            db.create_all()
+        print("DB bootstrap OK")
+        PY
+
   build:
     commands:
-      # 1) Pruebas con cobertura (falla si <70%)
-      - pytest -q --maxfail=1 --disable-warnings --cov=blacklist-ms/src --cov=blacklist-ms/application.py --cov-report=xml --cov-fail-under=70
-      # 2) Generar artefacto de despliegue (solo generación, NO CD)
+      - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
+      - pytest tests -vv --maxfail=1 --disable-warnings \
+          --cov=blacklist-ms/src \
+          --cov=blacklist-ms/application.py \
+          --cov-report=term-missing \
+          --cov-fail-under=${COVERAGE_MIN}
+      - echo "[BUILD] Empaquetando artefacto ZIP"
       - mkdir -p artifact
       - cd blacklist-ms
       - zip -r ../artifact/blacklist-ms-$CODEBUILD_BUILD_ID.zip application.py src .ebextensions requirements.txt
+
 artifacts:
   files:
-    - artifact/blacklist-ms-*.zip
+    - artifact/*.zip
   discard-paths: yes
-cache:
-  paths:
-    - '/root/.cache/pip/**/*'
