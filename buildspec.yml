@@ -34,28 +34,28 @@ phases:
         PY
 
   build:
-  commands:
-    - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
-    - |
-      set -e
+    commands:
+      - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
+      - |
+        set -e
 
-      # Detectar dónde están las rutas reales
-      COV_DIR="src"
-      [ -d "blacklist-ms/src" ] && COV_DIR="blacklist-ms/src"
+        # Detectar dónde están las rutas reales
+        COV_DIR="src"
+        [ -d "blacklist-ms/src" ] && COV_DIR="blacklist-ms/src"
 
-      COV_APP="application.py"
-      [ -f "blacklist-ms/application.py" ] && COV_APP="blacklist-ms/application.py"
+        COV_APP="application.py"
+        [ -f "blacklist-ms/application.py" ] && COV_APP="blacklist-ms/application.py"
 
-      TEST_DIR="tests"
-      [ -d "blacklist-ms/tests" ] && TEST_DIR="blacklist-ms/tests"
+        TEST_DIR="tests"
+        [ -d "blacklist-ms/tests" ] && TEST_DIR="blacklist-ms/tests"
 
-      echo "Usando cobertura en: $COV_DIR y $COV_APP; tests en: $TEST_DIR"
+        echo "Usando cobertura en: $COV_DIR y $COV_APP; tests en: $TEST_DIR"
 
-      pytest "$TEST_DIR" -vv --maxfail=1 --disable-warnings \
-        --cov="$COV_DIR" \
-        --cov="$COV_APP" \
-        --cov-report=term-missing \
-        --cov-fail-under=${COVERAGE_MIN}
+        pytest "$TEST_DIR" -vv --maxfail=1 --disable-warnings \
+          --cov="$COV_DIR" \
+          --cov="$COV_APP" \
+          --cov-report=term-missing \
+          --cov-fail-under=${COVERAGE_MIN}
 artifacts:
   files:
     - artifact/*.zip
