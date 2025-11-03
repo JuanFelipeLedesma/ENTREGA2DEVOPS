@@ -1,21 +1,25 @@
 # blacklist-ms/src/resources/blacklist_get.py
 from flask import Blueprint, jsonify
-from ..auth import require_bearer  # alias disponible en src/auth.py
+from ..auth import require_bearer
 from ..models import Blacklist
 
 bp = Blueprint("blacklist_get", __name__)
 
-@bp.get("/blacklists/<string:email>")
+@bp.route("/blacklists/<string:email>", methods=["GET"])
 @require_bearer
 def get_blacklist(email: str):
-    # Busca el registro más reciente por si hay múltiples entradas históricas
-    row = (
-        Blacklist.query.filter_by(email=email)
-        .order_by(Blacklist.created_at.desc() if hasattr(Blacklist, "created_at") else None)
-        .first()
-    )
+    """
+    Devuelve el estado de blacklist para un email.
+    - 200 si existe, con payload {'email', 'blacklisted': True, ['blocked_reason']}.
+    - 404 si no existe, con payload {'error': 'not found', 'email', 'blacklisted': False}.
+    """
+    q = Blacklist.query.filter_by(email=email)
+    # Si el modelo tiene created_at, usa el más reciente; si no, .first() igualmente funciona.
+    try:
+        row = q.order_by(Blacklist.created_at.desc()).first()
+    except Exception:
+        row = q.first()
 
-    # Si no existe, responde 404 (esto es lo que el test espera)
     if row is None:
         return jsonify({
             "error": "not found",
@@ -23,12 +27,10 @@ def get_blacklist(email: str):
             "blacklisted": False
         }), 404
 
-    # Si existe, responde 200 con el contrato mínimo
     payload = {
         "email": row.email,
         "blacklisted": True,
     }
-    # Incluye blocked_reason si existe (tu after_request puede enriquecer también)
     if getattr(row, "blocked_reason", None):
         payload["blocked_reason"] = row.blocked_reason
 
