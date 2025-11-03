@@ -1,0 +1,20 @@
+Flask==1.1.4
+Flask-RESTful==0.3.9
+Flask-SQLAlchemy==2.5.1
+SQLAlchemy==1.4.49
+
+marshmallow==3.20.1
+Flask-Marshmallow==0.15.0
+
+# Versión compatible con Flask 1.1.x
+Flask-JWT-Extended==3.25.1
+
+psycopg2-binary==2.9.9
+gunicorn==21.2.0
+
+# Pares compatibles con Flask 1.1.x
+Werkzeug==1.0.1
+Jinja2==2.11.3
+itsdangerous==1.1.0
+click==7.1.2
+MarkupSafe==2.0.1   # evita el error de soft_unicode

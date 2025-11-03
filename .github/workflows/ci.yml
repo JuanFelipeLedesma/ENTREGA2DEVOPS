@@ -1,0 +1,85 @@
+name: CI Blacklist MS
+
+on:
+  push:
+    branches: [ "master", "main" ]
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show tree (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type d -print
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deps (app + dev)
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -r blacklist-ms/requirements.txt
+          if [ -f "requirements-dev.txt" ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install pytest pytest-cov requests
+          fi
+
+      # 👇 NUEVO: crear tablas antes de los tests
+      - name: Bootstrap DB schema (create tables)
+        env:
+          DATABASE_URL: sqlite:///ci.sqlite3
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE/blacklist-ms
+          python - <<'PY'
+          import os
+          os.environ.setdefault("DATABASE_URL", "sqlite:///ci.sqlite3")
+          from application import application as app
+          # intenta importar el objeto 'db' desde los módulos más comunes
+          db = None
+          try:
+              from src.models import db as _db; db=_db
+          except Exception:
+              try:
+                  from src.database import db as _db; db=_db
+              except Exception:
+                  try:
+                      from src.db import db as _db; db=_db
+                  except Exception as e:
+                      raise SystemExit("No pude importar 'db' (src.models/src.database/src.db): "+str(e))
+          with app.app_context():
+              db.create_all()
+          print("DB bootstrap OK")
+          PY
+
+      - name: Run tests (coverage ≥70%)
+        env:
+          DATABASE_URL: sqlite:///ci.sqlite3
+          AUTH_TOKEN: change-me-very-strong
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE/blacklist-ms
+          pytest tests -vv --maxfail=1 --disable-warnings \
+            --cov=blacklist-ms/src \
+            --cov=blacklist-ms/application.py \
+            --cov-report=term-missing \
+            --cov-fail-under=70
+
+      - name: Package artifact (ZIP)
+        run: |
+          mkdir -p artifact
+          cd blacklist-ms
+          zip -r ../artifact/blacklist-ms-${{ github.sha }}.zip application.py src .ebextensions requirements.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blacklist-ms-${{ github.sha }}
+          path: artifact/*.zip

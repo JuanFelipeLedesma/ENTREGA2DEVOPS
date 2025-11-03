@@ -1,0 +1,34 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - python -V
+      - pip install --upgrade pip
+      - pip install -r blacklist-ms/requirements.txt
+      - pip install -r requirements-dev.txt
+  pre_build:
+    commands:
+      # Hacemos visible /blacklist-ms para imports "from application import application"
+      - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
+      # Variables mínimas para CI (DB efímera y token fijo)
+      - export DATABASE_URL=sqlite:///$CODEBUILD_SRC_DIR/ci.sqlite3
+      - export AUTH_TOKEN=change-me-very-strong
+      - export PORT=5000
+  build:
+    commands:
+      # 1) Pruebas con cobertura (falla si <70%)
+      - pytest -q --maxfail=1 --disable-warnings --cov=blacklist-ms/src --cov=blacklist-ms/application.py --cov-report=xml --cov-fail-under=70
+      # 2) Generar artefacto de despliegue (solo generación, NO CD)
+      - mkdir -p artifact
+      - cd blacklist-ms
+      - zip -r ../artifact/blacklist-ms-$CODEBUILD_BUILD_ID.zip application.py src .ebextensions requirements.txt
+artifacts:
+  files:
+    - artifact/blacklist-ms-*.zip
+  discard-paths: yes
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
