@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "85"
+    COVERAGE_MIN: "95"
 
 phases:
   install:
