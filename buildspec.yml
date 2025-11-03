@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "85"  # luego lo subimos a 95 para forzar un rojo de evidencia
+    COVERAGE_MIN: "85"  # puedes subirlo cuando quieras
 
 phases:
   install:
@@ -30,14 +30,13 @@ phases:
         python - <<'PY'
         import os
         from application import application as app
-        import src.models as models  # Asegura que las clases de modelo estén importadas
+        import src.models as models  # asegura import de clases de modelo
         from src.models import db
         from sqlalchemy import inspect
 
-        # Usa la misma URI que exportamos
         app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
         with app.app_context():
-            db.create_all()  # crea todas las tablas definidas en los modelos importados
+            db.create_all()
             print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
             print("Tablas creadas (bootstrap):", inspect(db.engine).get_table_names())
         PY
@@ -47,8 +46,9 @@ phases:
       - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
       - |
         set -e
-        # Usar SIEMPRE la misma BD que en el bootstrap
+        # Misma BD que el bootstrap y PYTHONPATH por si el entorno se reinicia
         export DATABASE_URL=sqlite:///ci.sqlite3
+        export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
 
         # Sanity check antes de correr pytest (mismas tablas visibles)
         python - <<'PY'
@@ -63,7 +63,7 @@ phases:
             print("Tablas existentes (pre-pytest):", inspect(db.engine).get_table_names())
         PY
 
-        # Detectar dónde están las rutas reales
+        # Rutas reales según layout
         COV_DIR="src"
         [ -d "blacklist-ms/src" ] && COV_DIR="blacklist-ms/src"
 
@@ -81,6 +81,35 @@ phases:
           --cov="$COV_APP" \
           --cov-report=term-missing \
           --cov-fail-under="${COVERAGE_MIN}"
+
+  post_build:
+    commands:
+      - echo "[POST_BUILD] Empaquetando artefacto para CodePipeline"
+      - rm -rf artifact && mkdir -p artifact
+      - |
+        if command -v zip >/dev/null 2>&1; then
+          # Incluye tests si existen; si no, empaqueta solo la app y pytest.ini
+          zip -r artifact/build.zip blacklist-ms tests pytest.ini 2>/dev/null || \
+          zip -r artifact/build.zip blacklist-ms pytest.ini
+        else
+          echo "[POST_BUILD] zip no disponible; creando ZIP con Python"
+          python - <<'PY'
+          import os, zipfile
+          items = ['blacklist-ms', 'tests', 'pytest.ini']
+          os.makedirs('artifact', exist_ok=True)
+          with zipfile.ZipFile('artifact/build.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for item in items:
+                  if os.path.isdir(item):
+                      for root, _, files in os.walk(item):
+                          for f in files:
+                              p = os.path.join(root, f)
+                              z.write(p, p)
+                  elif os.path.exists(item):
+                      z.write(item, item)
+          print("ZIP creado en artifact/build.zip")
+          PY
+        fi
+      - ls -la artifact
 
 artifacts:
   files:
