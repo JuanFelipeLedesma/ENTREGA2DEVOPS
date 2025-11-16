@@ -2,7 +2,11 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "98"
+    COVERAGE_MIN: "98"                 # cobertura mínima para fallar CI
+    AWS_DEFAULT_REGION: "us-west-2"    # (Oregón) ajústalo si usas otra región
+    ECR_REPO: "blacklist-ms"           # nombre del repo ECR a usar/crear
+    CONTAINER_NAME: "blacklist-ms"     # nombre del contenedor en la Task de ECS
+    CONTAINER_PORT: "5000"             # puerto expuesto por tu app en el contenedor
 
 phases:
   install:
@@ -20,6 +24,8 @@ phases:
         else
           pip install pytest pytest-cov requests
         fi
+      # Para CD con Docker: la imagen estándar de CodeBuild ya trae Docker CLI.
+      # Asegúrate de habilitar 'Privileged' en el proyecto de CodeBuild.
 
   pre_build:
     commands:
@@ -30,10 +36,9 @@ phases:
         python - <<'PY'
         import os
         from application import application as app
-        import src.models as models
+        import src.models as models  # fuerza import de modelos
         from src.models import db
         from sqlalchemy import inspect
-
         app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
         with app.app_context():
             db.create_all()
@@ -43,12 +48,12 @@ phases:
 
   build:
     commands:
+      - set -e
       - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
-      - |
-        set -e
-        export DATABASE_URL=sqlite:///ci.sqlite3
-        export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
+      - export DATABASE_URL=sqlite:///ci.sqlite3
+      - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
 
+      - |
         python - <<'PY'
         import os
         from application import application as app
@@ -60,33 +65,111 @@ phases:
             print("Tablas existentes (pre-pytest):", inspect(db.engine).get_table_names())
         PY
 
-        COV_DIR="src"
-        [ -d "blacklist-ms/src" ] && COV_DIR="blacklist-ms/src"
+      # Detectar rutas reales para coverage/tests
+      - COV_DIR="src"; [ -d "blacklist-ms/src" ] && COV_DIR="blacklist-ms/src"
+      - COV_APP="application.py"; [ -f "blacklist-ms/application.py" ] && COV_APP="blacklist-ms/application.py"
+      - TEST_DIR="tests"; [ -d "blacklist-ms/tests" ] && TEST_DIR="blacklist-ms/tests"
+      - echo "Usando cobertura en: $COV_DIR y $COV_APP; tests en: $TEST_DIR"
+      - echo "DATABASE_URL=${DATABASE_URL}"
 
-        COV_APP="application.py"
-        [ -f "blacklist-ms/application.py" ] && COV_APP="blacklist-ms/application.py"
-
-        TEST_DIR="tests"
-        [ -d "blacklist-ms/tests" ] && TEST_DIR="blacklist-ms/tests"
-
-        echo "Usando cobertura en: $COV_DIR y $COV_APP; tests en: $TEST_DIR"
-        echo "DATABASE_URL=${DATABASE_URL}"
-
+      - |
         pytest "$TEST_DIR" -vv --maxfail=1 --disable-warnings \
           --cov="$COV_DIR" \
           --cov="$COV_APP" \
           --cov-report=term-missing \
           --cov-fail-under="${COVERAGE_MIN}"
 
+      # ---------- Build & Push de la imagen a ECR (CD) ----------
+      - echo "[BUILD] Preparando ECR e imagen Docker"
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+      - ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO}"
+      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}  # sha corto del commit
+      - |
+        aws ecr describe-repositories --repository-names "${ECR_REPO}" >/dev/null 2>&1 || \
+        aws ecr create-repository --repository-name "${ECR_REPO}"
+      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${ECR_URI}"
+      # Si tu Dockerfile está en blacklist-ms/, construimos con ese contexto:
+      - docker build -t "${ECR_REPO}:latest" -f blacklist-ms/Dockerfile blacklist-ms
+      - docker tag "${ECR_REPO}:latest" "${ECR_URI}:${IMAGE_TAG}"
+      - docker push "${ECR_URI}:${IMAGE_TAG}"
+      - docker tag "${ECR_URI}:${IMAGE_TAG}" "${ECR_URI}:latest"
+      - docker push "${ECR_URI}:latest"
+
   post_build:
     commands:
-      - echo "[POST_BUILD] Empaquetando artefacto para CodePipeline"
+      - echo "[POST_BUILD] Preparando artefactos para CodePipeline / CodeDeploy"
       - rm -rf artifact && mkdir -p artifact
+
+      # 1) Artefacto 'imagedefinitions.json' (útil si usas acción 'Amazon ECS' en CodePipeline)
+      - |
+        cat > artifact/imagedefinitions.json <<JSON
+        [
+          {
+            "name": "${CONTAINER_NAME}",
+            "imageUri": "${ECR_URI}:${IMAGE_TAG}"
+          }
+        ]
+        JSON
+
+      # 2) appspec.yaml + taskdef.json para CodeDeploy ECS (Blue/Green).
+      #    Si traes plantillas propias en deploy/, se usan; si no, se generan mínimos.
+      - |
+        if [ -f deploy/appspec.yaml ]; then
+          cp deploy/appspec.yaml artifact/appspec.yaml
+        else
+          cat > artifact/appspec.yaml <<YAML
+          version: 1.0
+          Resources:
+            - TargetService:
+                Type: AWS::ECS::Service
+                Properties:
+                  TaskDefinition: "taskdef.json"
+                  LoadBalancerInfo:
+                    ContainerName: "${CONTAINER_NAME}"
+                    ContainerPort: ${CONTAINER_PORT}
+          YAML
+        fi
+
+      - |
+        if [ -f deploy/taskdef.json ]; then
+          # Si tu plantilla usa el marcador <IMAGE_URI>, lo reemplazamos
+          if grep -q "<IMAGE_URI>" deploy/taskdef.json; then
+            sed "s|<IMAGE_URI>|${ECR_URI}:${IMAGE_TAG}|g" deploy/taskdef.json > artifact/taskdef.json
+          else
+            # Si no usa marcador, intentamos sustituir el primer containerDefinitions[0].image con jq (si existe)
+            if command -v jq >/dev/null 2>&1; then
+              jq --arg IMG "${ECR_URI}:${IMAGE_TAG}" '.containerDefinitions[0].image=$IMG' deploy/taskdef.json > artifact/taskdef.json
+            else
+              cp deploy/taskdef.json artifact/taskdef.json
+              echo "[WARN] taskdef.json copiado sin reemplazar imagen (sin <IMAGE_URI> ni jq)"
+            fi
+          fi
+        else
+          # Genera un taskdef mínimo. Si ya tienes roles/logs/vars, usa deploy/taskdef.json propio.
+          cat > artifact/taskdef.json <<JSON
+          {
+            "family": "blacklist-ms-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "containerDefinitions": [
+              {
+                "name": "${CONTAINER_NAME}",
+                "image": "${ECR_URI}:${IMAGE_TAG}",
+                "essential": true,
+                "portMappings": [{ "containerPort": ${CONTAINER_PORT}, "protocol": "tcp" }]
+              }
+            ]
+          }
+          JSON
+        fi
+
+      # (opcional) el .zip de la app + tests como en la entrega 2
       - |
         python - <<'PY'
         import os, zipfile
         items = ['blacklist-ms', 'tests', 'pytest.ini']
-        os.makedirs('artifact', exist_ok=True)
         with zipfile.ZipFile('artifact/build.zip', 'w', zipfile.ZIP_DEFLATED) as z:
             for item in items:
                 if os.path.isdir(item):
@@ -98,9 +181,10 @@ phases:
                     z.write(item, item)
         print("ZIP creado en artifact/build.zip")
         PY
-      - ls -la artifact
+
+      - echo "[POST_BUILD] Artefactos generados:" && ls -la artifact
 
 artifacts:
   files:
-    - artifact/*.zip
+    - artifact/*           # subimos imagedefinitions.json, appspec.yaml, taskdef.json y build.zip
   discard-paths: yes
