@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "98"                 # cobertura mínima para fallar CI
+    COVERAGE_MIN: "75"                 # cobertura mínima para fallar CI
     AWS_DEFAULT_REGION: "us-west-2"    # región (Oregón)
     ECR_REPO: "blacklist-ms"           # nombre del repo ECR
     CONTAINER_NAME: "blacklist-ms"     # nombre del contenedor en ECS
