@@ -62,7 +62,7 @@ def _ensure_schema_before_request():
 def health():
     return jsonify({
         "status": "ok",
-        "version": "v7",
+        "version": "v8",
         "feature_verbose": FEATURE_VERBOSE,
     }), 200
 
