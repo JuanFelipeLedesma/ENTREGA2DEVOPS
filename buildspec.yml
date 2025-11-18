@@ -2,11 +2,11 @@ version: 0.2
 
 env:
   variables:
-    COVERAGE_MIN: "75"                 # cobertura mínima para fallar CI
-    AWS_DEFAULT_REGION: "us-west-2"    # región (Oregón)
-    ECR_REPO: "blacklist-ms"           # nombre del repo ECR
-    CONTAINER_NAME: "blacklist-ms"     # nombre del contenedor en ECS
-    CONTAINER_PORT: "5000"             # puerto expuesto por la app en el contenedor
+    COVERAGE_MIN: "75"               # umbral de cobertura (90% según lo que vimos)
+    AWS_DEFAULT_REGION: "us-west-2"  # Oregón
+    ECR_REPO: "blacklist-ms"         # nombre del repo ECR
+    CONTAINER_NAME: "blacklist-ms"   # nombre del contenedor en la task de ECS
+    CONTAINER_PORT: "5000"           # puerto del contenedor (Flask)
 
 phases:
   install:
@@ -15,55 +15,79 @@ phases:
     commands:
       - echo "[INSTALL] Actualizando pip/setuptools/wheel"
       - pip install --upgrade pip setuptools wheel
+
       - echo "[INSTALL] Dependencias de la app"
       - pip install -r blacklist-ms/requirements.txt
+
       - echo "[INSTALL] Dependencias de test"
       - |
-          if [ -f "requirements-dev.txt" ]; then
-            pip install -r requirements-dev.txt
-          else
-            pip install pytest pytest-cov requests
-          fi
+        if [ -f "requirements-dev.txt" ]; then
+          pip install -r requirements-dev.txt
+        else
+          pip install pytest pytest-cov requests
+        fi
 
   pre_build:
     commands:
       - echo "[PRE_BUILD] Exportando PYTHONPATH y preparando BD SQLite"
+      # para que 'application' y 'src' se encuentren dentro de blacklist-ms/
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
       - export DATABASE_URL=sqlite:///ci.sqlite3
-      - |
-          python - << 'PY'
-          import os
-          from application import application as app
-          from src.models import db
-          from sqlalchemy import inspect
 
-          app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
-          with app.app_context():
-              db.create_all()
-              print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
-              print("Tablas creadas:", inspect(db.engine).get_table_names())
-          PY
+      - |
+        python - << 'PY'
+        import os
+        from application import application as app
+        from src.models import db
+        from sqlalchemy import inspect
+
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
+        with app.app_context():
+            db.create_all()
+            print("DB bootstrap OK:", app.config["SQLALCHEMY_DATABASE_URI"])
+            print("Tablas creadas (bootstrap):", inspect(db.engine).get_table_names())
+        PY
 
   build:
     commands:
       - echo "[BUILD] Ejecutando pruebas con cobertura mínima ${COVERAGE_MIN}%"
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
       - export DATABASE_URL=sqlite:///ci.sqlite3
+
       - |
-          pytest tests -vv --maxfail=1 --disable-warnings \
-            --cov=blacklist-ms/src \
-            --cov=blacklist-ms/application.py \
-            --cov-report=term-missing \
-            --cov-fail-under="${COVERAGE_MIN}"
-      - echo "[BUILD] Construyendo imagen Docker y enviando a ECR"
+        python - << 'PY'
+        import os
+        from application import application as app
+        from sqlalchemy import inspect
+        from src.models import db
+
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
+        with app.app_context():
+            print("DB previa a pytest:", app.config["SQLALCHEMY_DATABASE_URI"])
+            print("Tablas existentes (pre-pytest):", inspect(db.engine).get_table_names())
+        PY
+
+      # aquí los tests están en 'tests/' en la raíz del repo
+      - |
+        pytest tests -vv --maxfail=1 --disable-warnings \
+          --cov=blacklist-ms/src \
+          --cov-report=term-missing \
+          --cov-fail-under=${COVERAGE_MIN}
+
+      # ---------- Build & Push de la imagen a ECR ----------
+      - echo "[BUILD] Preparando ECR e imagen Docker"
       - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
       - ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO}"
-      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}
+      # evitamos el error del slicing usando cut
+      - IMAGE_TAG=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION}" | cut -c1-7)
+
       - |
-          aws ecr describe-repositories --repository-names "${ECR_REPO}" >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name "${ECR_REPO}"
-      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
-          | docker login --username AWS --password-stdin "${ECR_URI}"
+        aws ecr describe-repositories --repository-names "${ECR_REPO}" >/dev/null 2>&1 || \
+        aws ecr create-repository --repository-name "${ECR_REPO}"
+
+      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${ECR_URI}"
+
+      # Dockerfile está dentro de blacklist-ms/
       - docker build -t "${ECR_REPO}:latest" -f blacklist-ms/Dockerfile blacklist-ms
       - docker tag "${ECR_REPO}:latest" "${ECR_URI}:${IMAGE_TAG}"
       - docker push "${ECR_URI}:${IMAGE_TAG}"
@@ -72,21 +96,85 @@ phases:
 
   post_build:
     commands:
-      - echo "[POST_BUILD] Generando imagedefinitions.json para CodePipeline (ECS)"
+      - echo "[POST_BUILD] Preparando artefactos para CodePipeline / ECS"
       - rm -rf artifact && mkdir -p artifact
+
+      # Recalculamos estos valores por si acaso
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+      - ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO}"
+      - IMAGE_TAG=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION}" | cut -c1-7)
+
+      # 1) imagedefinitions.json para acción 'Amazon ECS' en CodePipeline
       - |
-          cat > artifact/imagedefinitions.json << EOF
-          [
+        cat > artifact/imagedefinitions.json <<JSON
+        [
+          {
+            "name": "${CONTAINER_NAME}",
+            "imageUri": "${ECR_URI}:${IMAGE_TAG}"
+          }
+        ]
+        JSON
+
+      # 2) (Opcional) appspec.yaml + taskdef.json mínimos para CodeDeploy ECS Blue/Green.
+      - |
+        cat > artifact/appspec.yaml <<YAML
+        version: 1.0
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: "taskdef.json"
+                LoadBalancerInfo:
+                  ContainerName: "${CONTAINER_NAME}"
+                  ContainerPort: ${CONTAINER_PORT}
+        YAML
+
+      - |
+        cat > artifact/taskdef.json <<JSON
+        {
+          "family": "blacklist-ms-task",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "256",
+          "memory": "512",
+          "containerDefinitions": [
             {
               "name": "${CONTAINER_NAME}",
-              "imageUri": "${ECR_URI}:${IMAGE_TAG}"
+              "image": "${ECR_URI}:${IMAGE_TAG}",
+              "essential": true,
+              "portMappings": [
+                {
+                  "containerPort": ${CONTAINER_PORT},
+                  "protocol": "tcp"
+                }
+              ]
             }
           ]
-          EOF
+        }
+        JSON
+
+      # 3) (Opcional) ZIP con el código y tests, por si lo quieres reutilizar
+      - |
+        python - << 'PY'
+        import os, zipfile
+        items = ['blacklist-ms', 'tests', 'pytest.ini']
+        os.makedirs('artifact', exist_ok=True)
+        with zipfile.ZipFile('artifact/build.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+            for item in items:
+                if os.path.isdir(item):
+                    for root, _, files in os.walk(item):
+                        for f in files:
+                            p = os.path.join(root, f)
+                            z.write(p, p)
+                elif os.path.exists(item):
+                    z.write(item, item)
+        print("ZIP creado en artifact/build.zip")
+        PY
+
       - echo "[POST_BUILD] Artefactos generados:"
       - ls -la artifact
 
 artifacts:
   files:
-    - artifact/*
+    - artifact/*      # imagedefinitions.json, appspec.yaml, taskdef.json, build.zip
   discard-paths: yes
