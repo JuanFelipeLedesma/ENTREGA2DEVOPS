@@ -3,7 +3,7 @@ version: 0.2
 env:
   variables:
     COVERAGE_MIN: "98"                 # cobertura mínima para fallar CI
-    AWS_DEFAULT_REGION: "us-west-2"    # (Oregón) ajústalo si usas otra región
+    AWS_DEFAULT_REGION: "us-west-2"    # (Oregón)
     ECR_REPO: "blacklist-ms"           # nombre del repo ECR a usar/crear
     CONTAINER_NAME: "blacklist-ms"     # nombre del contenedor en la Task de ECS
     CONTAINER_PORT: "5000"             # puerto expuesto por tu app en el contenedor
@@ -39,11 +39,16 @@ phases:
         import src.models as models  # fuerza import de modelos
         from src.models import db
         from sqlalchemy import inspect
-        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
+
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+            "DATABASE_URL",
+            "sqlite:///ci.sqlite3"
+        )
         with app.app_context():
             db.create_all()
             print("DB bootstrap OK con", app.config["SQLALCHEMY_DATABASE_URI"])
-            print("Tablas creadas (bootstrap):", inspect(db.engine).get_table_names())
+            print("Tablas creadas (bootstrap):",
+                  inspect(db.engine).get_table_names())
         PY
 
   build:
@@ -59,10 +64,15 @@ phases:
         from application import application as app
         from sqlalchemy import inspect
         from src.models import db
-        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///ci.sqlite3")
+
+        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+            "DATABASE_URL",
+            "sqlite:///ci.sqlite3"
+        )
         with app.app_context():
             print("DB previa a pytest:", app.config["SQLALCHEMY_DATABASE_URI"])
-            print("Tablas existentes (pre-pytest):", inspect(db.engine).get_table_names())
+            print("Tablas existentes (pre-pytest):",
+                  inspect(db.engine).get_table_names())
         PY
 
       # Detectar rutas reales para coverage/tests
@@ -80,20 +90,24 @@ phases:
           --cov-fail-under="${COVERAGE_MIN}"
 
       # ---------- Build & Push de la imagen a ECR (CD) ----------
-      - echo "[BUILD] Preparando ECR e imagen Docker"
-      - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-      - ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO}"
-      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}  # sha corto del commit
       - |
+        echo "[BUILD] Preparando ECR e imagen Docker"
+        ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+        ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO}"
+        IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}  # sha corto del commit
+
         aws ecr describe-repositories --repository-names "${ECR_REPO}" >/dev/null 2>&1 || \
-        aws ecr create-repository --repository-name "${ECR_REPO}"
-      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${ECR_URI}"
-      # Si tu Dockerfile está en blacklist-ms/, construimos con ese contexto:
-      - docker build -t "${ECR_REPO}:latest" -f blacklist-ms/Dockerfile blacklist-ms
-      - docker tag "${ECR_REPO}:latest" "${ECR_URI}:${IMAGE_TAG}"
-      - docker push "${ECR_URI}:${IMAGE_TAG}"
-      - docker tag "${ECR_URI}:${IMAGE_TAG}" "${ECR_URI}:latest"
-      - docker push "${ECR_URI}:latest"
+          aws ecr create-repository --repository-name "${ECR_REPO}"
+
+        aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
+          | docker login --username AWS --password-stdin "${ECR_URI}"
+
+        # Si tu Dockerfile está en blacklist-ms/, construimos con ese contexto:
+        docker build -t "${ECR_REPO}:latest" -f blacklist-ms/Dockerfile blacklist-ms
+        docker tag "${ECR_REPO}:latest" "${ECR_URI}:${IMAGE_TAG}"
+        docker push "${ECR_URI}:${IMAGE_TAG}"
+        docker tag "${ECR_URI}:${IMAGE_TAG}" "${ECR_URI}:latest"
+        docker push "${ECR_URI}:latest"
 
   post_build:
     commands:
