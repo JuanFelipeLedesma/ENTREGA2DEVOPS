@@ -50,7 +50,7 @@ phases:
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/blacklist-ms
       - export DATABASE_URL=sqlite:///ci.sqlite3
       - |
-          pytest blacklist-ms/tests -vv --maxfail=1 --disable-warnings \
+          pytest tests -vv --maxfail=1 --disable-warnings \
             --cov=blacklist-ms/src \
             --cov=blacklist-ms/application.py \
             --cov-report=term-missing \
