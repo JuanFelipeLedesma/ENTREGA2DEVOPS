@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Evita bytecode y buffering
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8080 \
+    PORT=5000 \
     PIP_NO_CACHE_DIR=1
 
 # Instalar dependencias del sistema mínimas
@@ -24,8 +24,6 @@ RUN pip install --upgrade pip setuptools wheel \
 COPY . /app
 
 # Exponer puerto HTTP
-EXPOSE 8080
+EXPOSE 5000
 
-# Comando de arranque (gunicorn sobre el objeto Flask `application`)
-# Si tu módulo principal es application.py y expone `application`, esto funciona.
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "application:application", "--workers", "2", "--threads", "4"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "application:application", "--workers", "2", "--threads", "4"]
