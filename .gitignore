@@ -17,3 +17,6 @@ node_modules/
 # Artefactos CI
 artifact/
 blacklist-ms-*.zip
+.venv*
+venv/
+blacklist-ms/.venv*
