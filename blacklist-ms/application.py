@@ -12,16 +12,18 @@ from src.models import db, Blacklist  # importa el modelo para registrar metadat
 FEATURE_VERBOSE = os.getenv("FEATURE_VERBOSE", "false").lower() == "true"
 
 # ---- App ----
-application = Flask(__name__)
+app = Flask(__name__)
+# Alias opcional por si en algún sitio esperan "application"
+application = app
 
 # ---- DB URL (permitimos override del test) ----
 DB_URL = os.getenv("DATABASE_URL", CFG_DATABASE_URL)
-application.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
-application.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-application.config["FEATURE_VERBOSE"] = FEATURE_VERBOSE
+app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["FEATURE_VERBOSE"] = FEATURE_VERBOSE
 
 # ---- Engine options para SQLite (crítico para :memory:) ----
-engine_opts = dict(application.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))
+engine_opts = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))
 if DB_URL.startswith("sqlite:///:memory:"):
     # Un solo connection para todo el proceso → el esquema no se “pierde”
     engine_opts.update({
@@ -33,10 +35,11 @@ elif DB_URL.startswith("sqlite:///"):
         "connect_args": {"check_same_thread": False},
     })
 if engine_opts:
-    application.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_opts
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_opts
 
 # ---- Inicializa SQLAlchemy ----
-db.init_app(application)
+db.init_app(app)
+
 
 def _ensure_schema():
     """Crea tablas si aún no existen en el engine ACTIVO."""
@@ -48,17 +51,20 @@ def _ensure_schema():
         # no bloquear el request por esta verificación
         pass
 
+
 # 1) Defensa en import/arranque
-with application.app_context():
+with app.app_context():
     _ensure_schema()
 
+
 # 2) Defensa en cada request (evita el fallo del test de endpoints)
-@application.before_request
+@app.before_request
 def _ensure_schema_before_request():
     _ensure_schema()
 
+
 # ---- Health ----
-@application.route("/health", methods=["GET"])
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({
         "status": "ok",
@@ -66,14 +72,17 @@ def health():
         "feature_verbose": FEATURE_VERBOSE,
     }), 200
 
+
 # ---- Blueprints ----
 from src.resources.blacklist_post import bp as bp_post
 from src.resources.blacklist_get import bp as bp_get
-application.register_blueprint(bp_post)
-application.register_blueprint(bp_get)
+
+app.register_blueprint(bp_post)
+app.register_blueprint(bp_get)
+
 
 # ---- Enriquecimiento condicional de respuesta (GET /blacklists/<email>) ----
-@application.after_request
+@app.after_request
 def maybe_augment_blacklist_get(response):
     try:
         if (
@@ -91,7 +100,11 @@ def maybe_augment_blacklist_get(response):
             if isinstance(payload, dict) and "email" in payload and "blocked_reason" not in payload:
                 row = (
                     Blacklist.query.filter_by(email=payload["email"])
-                    .order_by(getattr(Blacklist, "created_at", None).desc() if hasattr(Blacklist, "created_at") else None)
+                    .order_by(
+                        getattr(Blacklist, "created_at", None).desc()
+                        if hasattr(Blacklist, "created_at")
+                        else None
+                    )
                     .first()
                 )
                 if row and getattr(row, "blocked_reason", None):
@@ -102,6 +115,7 @@ def maybe_augment_blacklist_get(response):
         pass
     return response
 
+
 # ---- Run local ----
 if __name__ == "__main__":
-    application.run(host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=PORT)
