@@ -15,4 +15,4 @@ COPY . /app
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "application:application", "--workers", "2", "--threads", "4"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "wsgi:app"]
