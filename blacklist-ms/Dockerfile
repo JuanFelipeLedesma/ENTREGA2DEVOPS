@@ -3,16 +3,20 @@ FROM public.ecr.aws/docker/library/python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PORT=5000
+    PORT=8080
 
 WORKDIR /app
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install -r /app/requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r /app/requirements.txt
 
 COPY . /app
 
-EXPOSE 5000
+EXPOSE 8080
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "wsgi:app"]
