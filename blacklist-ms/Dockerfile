@@ -17,6 +17,9 @@ RUN pip install --upgrade pip setuptools wheel && \
 
 COPY . /app
 
+COPY newrelic.ini .
+    
+
 EXPOSE 8080
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "wsgi:app"]
